@@ -1,0 +1,17 @@
+# Keep line endings predictable across platforms: shell scripts must stay LF or
+# they will not run under bash on Windows.
+* text=auto
+
+*.sh text eol=lf
+*.js text eol=lf
+*.go text eol=lf
+*.mod text eol=lf
+*.md text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.css text eol=lf
+*.gitignore text eol=lf
+*.gitattributes text eol=lf
+
+*.exe -text
+*.png -text

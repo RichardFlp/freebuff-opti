@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Freebuff Opti - panel preview</title>
+    <style>
+      /*
+       * A stand-in for Freebuff's shell, reproducing only what the panel talks
+       * to: the custom properties the workspace frame is inset by, the icon
+       * rail's class names, and the workspace frame itself. Open this file
+       * through a static server (`python -m http.server`) rather than as a
+       * file:// URL - the panel is a separate script and file:// blocks it.
+       */
+      :root {
+        color-scheme: dark;
+        --shell-base: #292b2a;
+        --workspace-surface: #1c1d1c;
+        --bg: var(--workspace-surface);
+        --chrome: var(--shell-base);
+        --surface: #222423;
+        --border: #2f322f;
+        --text: #dedfdd;
+        --muted: #a0a39f;
+        --faint: #858984;
+        --brand: #8ab4ff;
+        --danger: #ff7a7a;
+        --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        --font-mono: ui-monospace, Menlo, Consolas, monospace;
+        --font-size-ui: 12px;
+        --font-size-label: 11px;
+        --font-size-heading: 18px;
+        --tabbar-height: 48px;
+        --shell-rail-width: 52px;
+        --shell-inset: 8px;
+        --workspace-corner: 18px;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; background: var(--shell-base); color: var(--text); font-family: var(--font-sans); }
+      .desktop-shell { position: fixed; inset: 0; }
+      .shell-navigation {
+        position: absolute; top: 0; left: 0; bottom: 0; width: var(--shell-rail-width);
+        display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 0;
+        background: var(--shell-base); border-right: 1px solid var(--border);
+      }
+      .shell-navigation-top { display: flex; flex-direction: column; gap: 6px; }
+      .shell-nav-button {
+        width: 34px; height: 34px; display: grid; place-items: center; border: 0; border-radius: 8px;
+        background: transparent; color: var(--muted); cursor: pointer;
+      }
+      .shell-nav-button:hover { background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text); }
+      .shell-nav-button[aria-current] { color: var(--brand); background: color-mix(in srgb, var(--brand) 14%, transparent); }
+      .tabbar {
+        position: absolute; top: 0; left: var(--shell-rail-width); right: 0; height: var(--tabbar-height);
+        display: flex; align-items: flex-end; gap: 4px; padding: 0 10px; background: var(--shell-base);
+        border-bottom: 1px solid var(--border); font-size: var(--font-size-ui); color: var(--muted);
+      }
+      .tabs { display: flex; gap: 4px; }
+      .tab { padding: 7px 14px; border-radius: 8px 8px 0 0; background: var(--surface); color: var(--text); }
+      .workspace-frame {
+        position: absolute; top: var(--tabbar-height); left: var(--shell-rail-width);
+        right: var(--shell-inset); bottom: var(--shell-inset);
+        border-radius: var(--workspace-corner); background: var(--workspace-surface);
+        border: 1px solid var(--border); padding: 22px; overflow: auto;
+      }
+      .workspace-frame h1 { margin: 0 0 6px; font-size: var(--font-size-heading); }
+      .workspace-frame p { margin: 0 0 10px; color: var(--muted); line-height: 1.6; font-size: 13px; }
+      .workspace-frame code { font-family: var(--font-mono); color: var(--text); }
+      .swatch { display: flex; gap: 8px; margin-top: 14px; }
+      .swatch div { width: 54px; height: 54px; border-radius: 10px; border: 1px solid var(--border); }
+    </style>
+  </head>
+  <body>
+    <div class="desktop-shell">
+      <aside class="shell-navigation">
+        <div class="shell-navigation-top">
+          <button class="shell-nav-button" aria-label="Threads" aria-current="page">&#9635;</button>
+          <button class="shell-nav-button" aria-label="Search">&#9906;</button>
+        </div>
+      </aside>
+      <div class="tabbar"><div class="tabs"><span class="tab">thread.one</span><span class="tab">thread.two</span></div></div>
+      <main class="workspace-frame">
+        <h1>Freebuff Desktop (sandbox)</h1>
+        <p>
+          This is the app's own workspace frame. The panel should cover exactly this box - not the rail, not the tab
+          bar, not the window edges - because it measures the frame instead of recomputing the shell's arithmetic.
+        </p>
+        <p>
+          The gauge icon in the rail is the panel. Click it, then resize the window or collapse the rail and watch the
+          panel follow the frame.
+        </p>
+        <p>Settings are saved to cookies named <code>fbop_*</code>, which is what the Go guard reads.</p>
+        <div class="swatch">
+          <div style="background: var(--brand)"></div>
+          <div style="background: var(--surface)"></div>
+          <div style="background: var(--chrome)"></div>
+          <div style="background: var(--bg)"></div>
+        </div>
+      </main>
+    </div>
+    <script src="../injector/assets/opti-engine.js"></script>
+  </body>
+</html>
