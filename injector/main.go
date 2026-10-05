@@ -49,7 +49,7 @@ import (
 var engineJS []byte
 
 const (
-	version      = "1.1.0"
+	version      = "1.1.1"
 	markerStart  = "<!-- freebuff-opti:start -->"
 	markerEnd    = "<!-- freebuff-opti:end -->"
 	engineName   = "freebuff-opti.js"
@@ -585,12 +585,16 @@ func uninstallRequestPending(install string) (string, bool) {
 	if err != nil || raw == "" {
 		return "", false
 	}
-	req, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+	// Epoch milliseconds, which is what the panel writes: digits need no cookie
+	// escaping, so what is read here is what was written there. (An ISO string
+	// would arrive with its colons percent-encoded.)
+	ms, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 	if err != nil {
 		// A damaged timestamp must not be able to trigger a removal, for the
 		// same reason: it would fire again on every future install.
 		return "", false
 	}
+	req := time.UnixMilli(ms)
 	if installed, err := time.Parse(time.RFC3339, m.InstalledAt); err == nil && !req.After(installed) {
 		return "", false
 	}

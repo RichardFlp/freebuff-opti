@@ -47,8 +47,10 @@ const cookiePrefix = "fbop"
 // uninstallCookie carries the panel's request to be removed. It is deliberately
 // outside the settings chunk series: the panel clears its settings and writes
 // this in the same breath, and the guard has to see it after that has happened.
-// The value is the ISO timestamp of the click, which is what keeps a request
-// from outliving the install it belongs to (see uninstallRequestPending).
+// The value is the epoch-millisecond timestamp of the click, which is what keeps
+// a request from outliving the install it belongs to (see
+// uninstallRequestPending) - and it is digits only, because a ':' in a cookie
+// value is stored percent-encoded, so an ISO string would not survive the trip.
 const uninstallCookie = "fbop_uninstall"
 
 // maxSettingsChunks matches COOKIE_MAX_CHUNKS in assets/opti-engine.js. The two

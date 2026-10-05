@@ -25,7 +25,7 @@
 ;(function () {
   'use strict'
 
-  var VERSION = '1.1.0'
+  var VERSION = '1.1.1'
 
   /* ------------------------------------------------- persistence contract ---
    * The settings are one JSON document, base64url-encoded, split across
@@ -50,8 +50,9 @@
   /* The removal request. It is a cookie of its own rather than a field in the
    * settings document, because the removal clears the settings: a request that
    * lived inside what it is deleting would be deleted with it. The value is the
-   * timestamp of the click, which is what lets the guard tell a live request
-   * apart from one left over by an install that is already gone. */
+   * epoch-millisecond timestamp of the click, which is what lets the guard tell
+   * a live request apart from one left over by an install that is already gone -
+   * and it is digits only, because a ':' would be stored percent-encoded. */
   var COOKIE_UNINSTALL = 'fbop_uninstall'
 
   /* The daemon drops its last pass here, and the orchestrator serves this
@@ -474,9 +475,12 @@
     try {
       clearSeries()
     } catch (e) {}
+    // Epoch milliseconds rather than an ISO string: a ':' in a cookie value is
+    // stored percent-encoded, and the guard would then be parsing "%3A" out of
+    // the jar. Digits need no escaping, so what it reads is what was written.
     var written = false
     try {
-      written = writeCookie(COOKIE_UNINSTALL, new Date().toISOString(), 1)
+      written = writeCookie(COOKIE_UNINSTALL, String(Date.now()), 1)
     } catch (e) {
       written = false
     }
