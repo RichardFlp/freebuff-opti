@@ -4,7 +4,8 @@
  * This file is injected as a same-origin <script> by FreebuffOpti.exe. It adds
  * one button to Freebuff's own sidebar rail and one page, fitted to the app's
  * workspace frame, holding the RAM, CPU, display and cleanup controls the
- * injector's background guard enforces.
+ * injector's background guard enforces - and the Uninstall tab that takes the
+ * whole thing back off the machine again.
  *
  * Division of labour, because it is not obvious from the outside:
  *
@@ -24,7 +25,7 @@
 ;(function () {
   'use strict'
 
-  var VERSION = '1.0.0'
+  var VERSION = '1.1.0'
 
   /* ------------------------------------------------- persistence contract ---
    * The settings are one JSON document, base64url-encoded, split across
@@ -45,6 +46,13 @@
   var COOKIE_MAX_CHUNKS = 6
   var COOKIE_DAYS = 3650
   var LS_OPEN = 'fbop_open'
+
+  /* The removal request. It is a cookie of its own rather than a field in the
+   * settings document, because the removal clears the settings: a request that
+   * lived inside what it is deleting would be deleted with it. The value is the
+   * timestamp of the click, which is what lets the guard tell a live request
+   * apart from one left over by an install that is already gone. */
+  var COOKIE_UNINSTALL = 'fbop_uninstall'
 
   /* The daemon drops its last pass here, and the orchestrator serves this
    * directory straight off disk - so a same-origin fetch reads it. Freebuff's
@@ -349,6 +357,14 @@
   var notifySave = function () {}
 
   function saveNow(immediate) {
+    // Past the point of no return: the settings were cleared as part of the
+    // removal request, and writing them back would resurrect what the user just
+    // asked to be rid of.
+    if (removalRequested) {
+      clearTimeout(saveTimer)
+      saveTimer = null
+      return true
+    }
     if (immediate) {
       clearTimeout(saveTimer)
       saveTimer = null
@@ -431,6 +447,78 @@
       ;(document.head || document.documentElement).appendChild(el)
     }
     if (el.textContent !== css) el.textContent = css
+  }
+
+  /* --------------------------------------------------------------- removal ---
+   * "Delete the plugin completely" is the one thing this page cannot do for
+   * itself. It is a sandboxed renderer: it cannot delete a file, cannot end
+   * another process, and cannot undo the injection it arrived in. What it can do
+   * is leave a written request in the one store it owns - the cookie jar - and
+   * the guard, which is an ordinary process outside Freebuff, carries it out on
+   * its next pass: release the limits, put index.html back, delete the panel,
+   * and take away its own files and logon entry.
+   *
+   * Everything the user can see about that handover comes from the status file
+   * the guard already writes for this page (see fetchReport).
+   */
+  var removalRequested = false
+  var removalPoll = null
+
+  /** Leave the removal request and clear what this side can clear on its own.
+   *  Returns false only when the request could not be written at all. */
+  function requestRemoval() {
+    if (removalRequested) return true
+    // The saved settings are the extension's too, and they are the half of the
+    // removal the page can actually do: an outside process rewriting Chromium's
+    // live cookie jar is not something to bet a user's Freebuff on.
+    try {
+      clearSeries()
+    } catch (e) {}
+    var written = false
+    try {
+      written = writeCookie(COOKIE_UNINSTALL, new Date().toISOString(), 1)
+    } catch (e) {
+      written = false
+    }
+    if (!written) return false
+    removalRequested = true
+    return true
+  }
+
+  /** Watch for the guard's answer. Three states are real and all three are
+   *  visible: the request is waiting, the guard has picked it up, and the guard
+   *  is gone - which is what the removal of its status file means. */
+  function trackRemoval(onStatus) {
+    var seenStatus = false
+    if (removalPoll) clearInterval(removalPoll)
+    var tick = function () {
+      fetchReport().then(function (r) {
+        if (r) {
+          seenStatus = true
+          if (!r.guarded) {
+            onStatus('bad', 'No background guard is installed on this PC, so nothing is listening for the request. Run FreebuffOpti.exe --uninstall.')
+            clearInterval(removalPoll)
+            removalPoll = null
+            return
+          }
+          if (r.uninstallPending) {
+            onStatus('work', 'The guard has the request and is removing Freebuff Opti now\u2026')
+            return
+          }
+          onStatus('wait', 'Waiting for the guard\u2019s next pass, every ' + (state.watchdog.intervalSeconds || 20) + ' seconds\u2026')
+          return
+        }
+        if (seenStatus) {
+          onStatus('done', 'Done. Freebuff Opti has been removed. Freebuff goes back to stock the next time it starts.')
+          clearInterval(removalPoll)
+          removalPoll = null
+          return
+        }
+        onStatus('bad', 'No status from a guard yet. If nothing happens within a minute, run FreebuffOpti.exe --uninstall.')
+      })
+    }
+    tick()
+    removalPoll = setInterval(tick, 2500)
   }
 
   /* ------------------------------------------------------------------- DOM --- */
@@ -606,6 +694,26 @@
 .fbop-btn:hover { border-color: var(--fbop-accent); }
 .fbop-btn.primary { background: var(--fbop-accent); border-color: var(--fbop-accent); color: #0a0c10; }
 .fbop-btn.danger:hover { border-color: var(--fbop-danger); color: var(--fbop-danger); }
+.fbop-btn.danger.solid { background: var(--fbop-danger); border-color: var(--fbop-danger); color: #0a0c10; }
+
+.fbop-danger {
+  border: 1px solid color-mix(in srgb, var(--fbop-danger) 40%, var(--fbop-line));
+  border-radius: 11px; padding: 13px 14px;
+  background: color-mix(in srgb, var(--fbop-danger) 9%, transparent);
+}
+.fbop-danger h3 { font-size: var(--fbop-ui); font-weight: 600; margin-bottom: 7px; }
+.fbop-danger p { font-size: var(--fbop-label); color: var(--fbop-mute); line-height: 1.55; }
+.fbop-remove-list { margin: 11px 0 0 17px; }
+.fbop-remove-list li { font-size: var(--fbop-label); color: var(--fbop-mute); line-height: 1.65; }
+.fbop-remove-list code { font-family: var(--fbop-mono); color: var(--fbop-ink); }
+.fbop-remove-box { margin-top: 12px; }
+.fbop-remove-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.fbop-remove-confirm { display: none; align-items: center; gap: 9px; flex-wrap: wrap; }
+.fbop-remove-confirm.show { display: flex; }
+.fbop-remove-status { margin-top: 10px; font-size: var(--fbop-label); color: var(--fbop-mute); line-height: 1.6; }
+.fbop-remove-status.work { color: var(--fbop-warn); }
+.fbop-remove-status.done { color: var(--fbop-good); }
+.fbop-remove-status.bad { color: var(--fbop-danger); }
 
 .fbop-note { font-size: var(--fbop-label); color: var(--fbop-faint); line-height: 1.55; margin: 8px 2px 0; }
 .fbop-note code { font-family: var(--fbop-mono); color: var(--fbop-mute); }
@@ -742,6 +850,7 @@
     var paneCPU = el('div', { class: 'fbop-pane', 'data-pane': 'cpu' })
     var paneDisplay = el('div', { class: 'fbop-pane', 'data-pane': 'display' })
     var paneCleanup = el('div', { class: 'fbop-pane', 'data-pane': 'cleanup' })
+    var paneRemove = el('div', { class: 'fbop-pane', 'data-pane': 'remove' })
 
     var detect = el('div', { class: 'fbop-detect' })
     var cards = el('div', { class: 'fbop-cards' })
@@ -823,7 +932,79 @@
       }),
     )
 
-    var panes = { presets: panePresets, memory: paneMemory, cpu: paneCPU, display: paneDisplay, cleanup: paneCleanup }
+    /* The Uninstall tab. Everything it will do is listed up front, the first
+     * click only asks, and the second one removes. */
+    var removeStatus = el('div', { class: 'fbop-remove-status' })
+    var removeBtn = el('button', { class: 'fbop-btn danger', type: 'button', text: 'Remove Freebuff Opti' })
+    var confirmBtn = el('button', { class: 'fbop-btn danger solid', type: 'button', text: 'Yes, remove everything' })
+    var cancelBtn = el('button', { class: 'fbop-btn', type: 'button', text: 'Cancel' })
+    var confirmRow = el('div', { class: 'fbop-remove-confirm' }, [
+      confirmBtn,
+      cancelBtn,
+      el('span', { class: 'fbop-row-hint', text: 'This cannot be undone.' }),
+    ])
+    var removeActions = el('div', { class: 'fbop-remove-actions' }, [removeBtn, confirmRow])
+
+    function setRemoveStatus(kind, text) {
+      removeStatus.className = 'fbop-remove-status' + (kind ? ' ' + kind : '')
+      removeStatus.textContent = text
+    }
+
+    function beginRemoval() {
+      if (!requestRemoval()) {
+        setRemoveStatus(
+          'bad',
+          'Could not leave the request: cookies are blocked, and a cookie is the only place the guard can read it from. Run FreebuffOpti.exe --uninstall instead.',
+        )
+        return
+      }
+      removeActions.style.display = 'none'
+      setRemoveStatus(
+        'work',
+        'Request saved. The guard removes Freebuff Opti on its next pass, within about ' +
+          (state.watchdog.intervalSeconds || 20) +
+          ' seconds.',
+      )
+      refreshFooter()
+      trackRemoval(setRemoveStatus)
+    }
+
+    removeBtn.addEventListener('click', function () {
+      removeBtn.style.display = 'none'
+      setRemoveStatus('', '')
+      confirmRow.classList.add('show')
+    })
+    cancelBtn.addEventListener('click', function () {
+      confirmRow.classList.remove('show')
+      setRemoveStatus('', '')
+      removeBtn.style.display = ''
+    })
+    confirmBtn.addEventListener('click', beginRemoval)
+
+    paneRemove.appendChild(
+      el('div', { class: 'fbop-danger' }, [
+        el('h3', { text: 'Remove Freebuff Opti from this PC' }),
+        el('p', {
+          text: 'Freebuff itself is never modified, moved or deleted. The removal puts its own UI file back exactly the way this tool found it, and takes everything this tool added away.',
+        }),
+        el('ul', { class: 'fbop-remove-list' }, [
+          el('li', { text: 'Releases every memory, CPU and display limit on every Freebuff process.' }),
+          el('li', { html: 'Removes the injected <code>&lt;script&gt;</code> tag and restores the saved original <code>index.html</code>.' }),
+          el('li', { html: 'Deletes <code>assets/freebuff-opti.js</code>, the guard\u2019s status file and the install manifest.' }),
+          el('li', { html: 'Stops the background guard, removes it from logon, and deletes <code>%LOCALAPPDATA%\\FreebuffOpti</code>.' }),
+          el('li', { text: 'Clears the settings this panel saved in Freebuff\u2019s cookie jar.' }),
+        ]),
+        el('div', { class: 'fbop-remove-box' }, [removeActions, removeStatus]),
+      ]),
+    )
+    paneRemove.appendChild(
+      el('p', {
+        class: 'fbop-note',
+        html: 'A page cannot delete files or end another process, so the button leaves a request that the guard reads on its next pass. If you would rather do it from outside Freebuff, run <code>FreebuffOpti.exe --uninstall</code>.',
+      }),
+    )
+
+    var panes = { presets: panePresets, memory: paneMemory, cpu: paneCPU, display: paneDisplay, cleanup: paneCleanup, remove: paneRemove }
 
     var tabbar = el('div', { class: 'fbop-tabs' })
     var TABS = [
@@ -832,6 +1013,7 @@
       ['cpu', 'CPU'],
       ['display', 'Display'],
       ['cleanup', 'Cleanup'],
+      ['remove', 'Uninstall'],
     ]
     var tabButtons = {}
     TABS.forEach(function (t) {
@@ -882,7 +1064,7 @@
         })(),
       ]),
       tabbar,
-      el('div', { class: 'fbop-body' }, [panePresets, paneMemory, paneCPU, paneDisplay, paneCleanup]),
+      el('div', { class: 'fbop-body' }, [panePresets, paneMemory, paneCPU, paneDisplay, paneCleanup, paneRemove]),
       footer,
     ])
 
@@ -910,6 +1092,11 @@
     }
 
     function refreshFooter() {
+      if (removalRequested) {
+        statusEl.innerHTML =
+          '<span class="fbop-dot warn"></span><b>Removal requested</b> \u00b7 the guard is taking Freebuff Opti off this machine'
+        return
+      }
       var on = []
       if (state.memory.enabled) on.push('memory \u2264 ' + state.memory.capMb + ' MB')
       if (state.cpu.enabled) {
@@ -986,7 +1173,18 @@
       showToast(p.label + ' applied' + (key === 'off' ? '' : ' - the guard picks it up within about ' + state.watchdog.intervalSeconds + ' seconds'))
     }
 
-    root = { selectTab: selectTab, refreshControls: refreshControls, refreshActive: refreshActive, refreshFooter: refreshFooter, refreshDetect: refreshDetect, refreshPresetCards: refreshPresetCards }
+    root = {
+      selectTab: selectTab,
+      refreshControls: refreshControls,
+      refreshActive: refreshActive,
+      refreshFooter: refreshFooter,
+      refreshDetect: refreshDetect,
+      refreshPresetCards: refreshPresetCards,
+      requestRemoval: beginRemoval,
+      showRemoveTab: function () {
+        selectTab('remove')
+      },
+    }
     return panel
   }
 
@@ -1229,6 +1427,12 @@
       cosmeticsCSS: function () {
         return cosmeticCSS(state)
       },
+      requestRemoval: function () {
+        root.requestRemoval()
+      },
+      removalRequested: function () {
+        return removalRequested
+      },
     }
 
     installRailButton()
@@ -1298,6 +1502,16 @@
     },
     open: function (force) {
       if (ui) ui.toggle(force)
+    },
+    /** Ask to be removed without the two-step confirm, and show the tab that
+     *  reports what happened. This is the dev surface, not a user-facing path. */
+    requestRemoval: function () {
+      if (!ui) return
+      root.showRemoveTab()
+      ui.requestRemoval()
+    },
+    removalRequested: function () {
+      return removalRequested
     },
   }
 

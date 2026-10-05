@@ -17,9 +17,16 @@
 // every Freebuff jar had an empty encrypted_value), but Chromium can also store
 // them DPAPI- or AES-GCM-encrypted, so both are handled rather than assumed
 // away.
+//
+// The jar is read-only, always. The panel's Uninstall tab asks to be removed by
+// writing one more cookie (`fbop_uninstall`), and the daemon reads that request
+// the same way it reads the settings - it never writes to the jar, because
+// rewriting a live cookie database behind another process's back is not a risk
+// worth taking with someone's Freebuff.
 package main
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
@@ -36,6 +43,13 @@ import (
 )
 
 const cookiePrefix = "fbop"
+
+// uninstallCookie carries the panel's request to be removed. It is deliberately
+// outside the settings chunk series: the panel clears its settings and writes
+// this in the same breath, and the guard has to see it after that has happened.
+// The value is the ISO timestamp of the click, which is what keeps a request
+// from outliving the install it belongs to (see uninstallRequestPending).
+const uninstallCookie = "fbop_uninstall"
 
 // maxSettingsChunks matches COOKIE_MAX_CHUNKS in assets/opti-engine.js. The two
 // files are the two ends of one contract; changing one means changing both.
@@ -145,18 +159,20 @@ func readSettingsFromCookies(install string) (*optiSettings, error) {
 	return nil, nil
 }
 
-// readSettingsFromJar reads one cookie jar. The query is restricted to the
-// `fbop%` prefix in SQL, so no other cookie is ever even loaded.
-func readSettingsFromJar(bun, db string) (*optiSettings, error) {
+// queryCookies runs one read-only query against a cookie jar and returns
+// name -> value, decrypting anything Chromium stored encrypted. The predicate is
+// assembled in Go from literals in this file, so no cookie name ever reaches the
+// SQL as data and the read can never widen beyond the names the daemon wrote.
+func queryCookies(bun, db, predicate string) (map[string]string, error) {
 	script := `(async () => {
   const { Database } = await import('bun:sqlite')
   const db = new Database(process.env.FBOP_DB, { readonly: true })
-  const rows = db.query("select name, value, hex(encrypted_value) as enc from cookies where name like '" + process.env.FBOP_PREFIX + "%'").all()
+  const rows = db.query("select name, value, hex(encrypted_value) as enc from cookies where " + process.env.FBOP_WHERE).all()
   console.log(JSON.stringify(rows))
 })()`
 	cmd := exec.Command(bun, "-e", script)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	cmd.Env = append(os.Environ(), "FBOP_DB="+db, "FBOP_PREFIX="+cookiePrefix)
+	cmd.Env = append(os.Environ(), "FBOP_DB="+db, "FBOP_WHERE="+predicate)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -185,6 +201,16 @@ func readSettingsFromJar(bun, db string) (*optiSettings, error) {
 		}
 		parts[r.Name] = v
 	}
+	return parts, nil
+}
+
+// readSettingsFromJar reads one cookie jar. The query is restricted to the
+// `fbop%` prefix in SQL, so no other cookie is ever even loaded.
+func readSettingsFromJar(bun, db string) (*optiSettings, error) {
+	parts, err := queryCookies(bun, db, "name like '"+cookiePrefix+"%'")
+	if err != nil {
+		return nil, err
+	}
 	count := strings.TrimSpace(parts[cookiePrefix+"_n"])
 	if count == "" {
 		return nil, nil
@@ -210,6 +236,38 @@ func readSettingsFromJar(bun, db string) (*optiSettings, error) {
 		return nil, err
 	}
 	return doc, nil
+}
+
+// readUninstallRequest returns the panel's removal request, or "" when none is
+// set. A jar that cannot be read is skipped rather than fatal, like the settings
+// read, and a jar whose bytes do not mention the cookie is not opened at all -
+// so the common case costs one file scan instead of a Bun launch.
+func readUninstallRequest(install string) (string, error) {
+	bun := bunBinary(install)
+	if bun == "" {
+		return "", fmt.Errorf("Freebuff's Bun runtime was not found")
+	}
+	var lastErr error
+	found := false
+	for _, db := range profileCookieDBs() {
+		b, err := os.ReadFile(db)
+		if err != nil || !bytes.Contains(b, []byte(uninstallCookie)) {
+			continue
+		}
+		found = true
+		parts, err := queryCookies(bun, db, "name = '"+uninstallCookie+"'")
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if v := strings.TrimSpace(parts[uninstallCookie]); v != "" {
+			return v, nil
+		}
+	}
+	if lastErr != nil && found {
+		return "", lastErr
+	}
+	return "", nil
 }
 
 // parseSeriesCount reads the "<generation>:<chunkCount>" value the panel

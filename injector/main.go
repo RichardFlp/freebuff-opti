@@ -49,7 +49,7 @@ import (
 var engineJS []byte
 
 const (
-	version      = "1.0.0"
+	version      = "1.1.0"
 	markerStart  = "<!-- freebuff-opti:start -->"
 	markerEnd    = "<!-- freebuff-opti:end -->"
 	engineName   = "freebuff-opti.js"
@@ -481,9 +481,20 @@ func writeManifest(ui string, original []byte) error {
 	if _, err := os.Stat(backupPath(ui)); err != nil {
 		hadBackup = false
 	}
+	// InstalledAt is the moment Freebuff Opti first went into this install, and
+	// it is deliberately not refreshed by a re-inject: the panel's removal
+	// request is only honoured while it is newer than the injection it belongs
+	// to (see uninstallRequestPending), so an update that re-injects the panel
+	// must not quietly invalidate a request the user just made. A genuine
+	// reinstall starts from a manifest that uninstall() removed, so it gets a
+	// fresh timestamp and the previous request dies with the previous install.
+	installedAt := time.Now().UTC().Format(time.RFC3339)
+	if prev := readManifest(ui); prev != nil && prev.InstalledAt != "" {
+		installedAt = prev.InstalledAt
+	}
 	m := manifest{
 		Version:     version,
-		InstalledAt: time.Now().UTC().Format(time.RFC3339),
+		InstalledAt: installedAt,
 		OriginalSHA: sha256Hex(original),
 		HadBackup:   hadBackup,
 	}
@@ -548,6 +559,86 @@ func uninstall(ui string, quiet bool) error {
 	return nil
 }
 
+// ------------------------------------------------------------ remove it all ---
+
+// uninstallRequestPending reports whether the panel has asked to be removed, and
+// returns the timestamp of that request.
+//
+// The panel cannot delete anything: it is a sandboxed renderer with no filesystem
+// access, so the Uninstall tab leaves a cookie instead and the guard - which is
+// an ordinary process - does the deleting. See store.go for the channel.
+//
+// A request is honoured only while it is newer than the injection it belongs to.
+// The cookie outlives the removal (nothing can safely write Chromium's live
+// cookie jar from outside, so the daemon never tries), and without that
+// comparison installing Freebuff Opti again would be undone by the previous
+// install's dying request - a loop the user would have no way to escape.
+func uninstallRequestPending(install string) (string, bool) {
+	ui := filepath.Join(install, "resources", "orchestrator", "ui")
+	m := readManifest(ui)
+	if m == nil {
+		// No manifest means no injection the guard owns; the next tick writes a
+		// fresh one, and the request is older than that by definition.
+		return "", false
+	}
+	raw, err := readUninstallRequest(install)
+	if err != nil || raw == "" {
+		return "", false
+	}
+	req, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+	if err != nil {
+		// A damaged timestamp must not be able to trigger a removal, for the
+		// same reason: it would fire again on every future install.
+		return "", false
+	}
+	if installed, err := time.Parse(time.RFC3339, m.InstalledAt); err == nil && !req.After(installed) {
+		return "", false
+	}
+	return strings.TrimSpace(raw), true
+}
+
+// scheduleSelfRemoval deletes this executable's folder a moment after this
+// process exits. Windows will not delete a running image but will happily rename
+// one, which is why removeWatch() leaves at most one file behind - the guard's
+// own .exe - and why the leftover has to be cleaned up from outside. Nothing
+// happens unless this process is the installed guard: an installer the user
+// downloaded is their file, not ours to delete.
+func scheduleSelfRemoval() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return
+	}
+	dir := watchDir()
+	if dir == "" || !strings.EqualFold(filepath.Clean(filepath.Dir(self)), filepath.Clean(dir)) {
+		return
+	}
+	// ping is the sleep: unlike `timeout`, it needs no console and no redirect.
+	script := fmt.Sprintf(`ping -n 4 127.0.0.1 >nul & rmdir /s /q "%s" >nul 2>&1`, dir)
+	cmd := exec.Command("cmd.exe", "/c", script)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: detachedFlag}
+	if err := cmd.Start(); err != nil {
+		return
+	}
+	_ = cmd.Process.Release()
+}
+
+// removeEverything is the one place that takes the tool back off the machine:
+// release the limits, remove the panel and restore the UI file, then stop the
+// guard and take its files away. --uninstall runs it, and it is what the guard
+// runs when the panel's Uninstall tab asks.
+func removeEverything(ui string, quiet bool) error {
+	clearLimits(quiet)
+	if err := uninstall(ui, quiet); err != nil {
+		return err
+	}
+	removeWatch()
+	scheduleSelfRemoval()
+	return nil
+}
+
 // ------------------------------------------------------------------ limits ---
 
 // applyState is what the last application pass actually achieved, which is what
@@ -564,6 +655,13 @@ type applyState struct {
 	JobAssigned int    `json:"jobAssigned"`
 	JobRefused  int    `json:"jobRefused"`
 	Note        string `json:"note"`
+	// Guarded says whether a background guard is installed to act on the next
+	// removal request. It is how the panel's Uninstall tab can tell "the guard
+	// has not looked yet" apart from "nothing is listening at all".
+	Guarded bool `json:"guarded"`
+	// UninstallPending mirrors the panel's removal request, so the tab can show
+	// that the request arrived instead of guessing from a silent wait.
+	UninstallPending bool `json:"uninstallPending"`
 }
 
 func statePath(dir string) string { return filepath.Join(dir, "applied.json") }
@@ -645,6 +743,10 @@ func clearLimits(quiet bool) int {
 // did not exist when the panel loaded.
 func applyLimits(install string, quiet bool) (applyState, error) {
 	st := applyState{At: time.Now().UTC().Format(time.RFC3339)}
+	st.Guarded = guardInstalled()
+	if _, pending := uninstallRequestPending(install); pending {
+		st.UninstallPending = true
+	}
 
 	doc, err := readSettingsFromCookies(install)
 	if err != nil && !quiet {
@@ -1206,20 +1308,31 @@ func needsInjection(ui string) (bool, string) {
 	return false, ""
 }
 
-// watchTick is one pass of the guard: keep the panel in place, and keep the
-// limits on.
-func watchTick() {
+// guardInstall is the install the guard is responsible for: the one it was
+// installed into, or - if that is gone - whatever install it can find now, so
+// that a Freebuff update or a move does not leave the limits unenforced.
+func guardInstall() string {
 	g := readGuard()
 	if g == nil {
-		return
+		return ""
 	}
 	install := g.Install
 	if install == "" || !isInstallDir(install) {
 		found, err := findInstallDir("")
 		if err != nil {
-			return
+			return ""
 		}
 		install = found
+	}
+	return install
+}
+
+// watchTick is one pass of the guard: keep the panel in place, and keep the
+// limits on.
+func watchTick() {
+	install := guardInstall()
+	if install == "" {
+		return
 	}
 	ui := filepath.Join(install, "resources", "orchestrator", "ui")
 	if need, why := needsInjection(ui); need {
@@ -1262,6 +1375,19 @@ func runWatch() {
 		}
 	}()
 	for {
+		// The panel's Uninstall tab cannot delete anything - it is a sandboxed
+		// renderer - so it leaves a request behind, and this process is what
+		// answers it. It is checked before anything else so that a user who has
+		// asked to be removed is not first re-capped on the way out.
+		if install := guardInstall(); install != "" {
+			if _, pending := uninstallRequestPending(install); pending {
+				guardLog("removing Freebuff Opti at the panel's request")
+				if err := removeEverything(filepath.Join(install, "resources", "orchestrator", "ui"), true); err != nil {
+					guardLog("the requested removal failed: " + err.Error())
+				}
+				return
+			}
+		}
 		watchTick()
 		time.Sleep(watchInterval)
 		if readWatchPid() != os.Getpid() {
@@ -1433,6 +1559,7 @@ func main() {
 		fmt.Printf("Usage: %s [options]\n\n", filepath.Base(os.Args[0]))
 		fmt.Println("  Run with no options to install the optimisation panel into Freebuff Desktop.")
 		fmt.Println("  Then open Freebuff and click the gauge icon in its sidebar rail.")
+		fmt.Println("  Its Uninstall tab removes Freebuff Opti again, panel and guard and all.")
 		fmt.Println()
 		flag.PrintDefaults()
 		fmt.Println()
@@ -1544,12 +1671,10 @@ func main() {
 		if !quiet {
 			step("Removing Freebuff Opti")
 		}
-		clearLimits(quiet)
-		if err := uninstall(ui, quiet); err != nil {
+		if err := removeEverything(ui, quiet); err != nil {
 			warn("%v", err)
 			os.Exit(1)
 		}
-		removeWatch()
 		fmt.Println()
 		ok("Freebuff is back to stock. Restart it if it is running.")
 		if *restartFlag {

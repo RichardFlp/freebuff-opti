@@ -74,7 +74,7 @@ EcoQoS, all of which are per-process calls and do apply everywhere.
 
 ## The panel
 
-Five tabs, and nothing hidden behind a preset:
+Six tabs, and nothing hidden behind a preset:
 
 - **Presets** - Off, Low-end, **Potato**, Battery. The panel reads `navigator.hardwareConcurrency`
   and `navigator.deviceMemory` and tells you which one it would pick, and why.
@@ -83,6 +83,7 @@ Five tabs, and nothing hidden behind a preset:
 - **Display** - compact layout, reduce motion, reduce effects, thin scrollbars.
 - **Cleanup** - cache budget, stray helper processes, idle threads, and the guard's own
   re-check interval.
+- **Uninstall** - removes Freebuff Opti from this PC completely. See below.
 
 The footer always says what is currently set, in words. `Apply now` writes immediately; the
 guard picks the change up within about 20 seconds. `Turn everything off` returns Freebuff to
@@ -92,6 +93,33 @@ Settings live in cookies named `fbop_*` - not `localStorage`, which is keyed by 
 therefore by port, and Freebuff takes a new port on every launch. A save is written as a new
 generation and published only when it is complete, so closing Freebuff mid-drag cannot lose
 the previous settings.
+
+### Uninstalling from inside Freebuff
+
+The **Uninstall** tab deletes the whole thing without a terminal: it lists what will go, asks
+once, and then removes it. One click is never enough - the confirm button is the second.
+
+The page cannot do the removal itself, and that is worth being precise about. It is a
+sandboxed renderer: it cannot delete a file, cannot end another process, and cannot undo the
+injection it arrived in. So it clears the settings it owns, writes a request cookie
+(`fbop_uninstall`) and the guard - an ordinary process outside Freebuff - carries it out on
+its next pass, within about 20 seconds:
+
+- releases every memory, CPU and display limit on every Freebuff process;
+- removes the injected `<script>` tag and restores the saved original `index.html`;
+- deletes `assets/freebuff-opti.js`, the guard's status file and the manifest;
+- stops the guard, removes it from `HKCU\...\CurrentVersion\Run`, and deletes
+  `%LOCALAPPDATA%\FreebuffOpti`;
+- then the guard exits, and the last file - its own running `.exe` - is deleted a moment later.
+
+Freebuff itself is never modified, moved or deleted. The tab reports each step from the status
+file the guard already writes for the page, so "waiting", "removing" and "gone" are all
+visible, and if no guard is running it says so and points at the command line instead.
+
+The request is honoured only while it is newer than the installed injection. The cookie cannot
+be removed from outside without writing Chromium's live cookie jar, which this tool will not
+do, so without that check installing Freebuff Opti again would be undone by the previous
+install's dying request.
 
 ---
 
@@ -109,6 +137,9 @@ FreebuffOpti.exe --no-guard      Install the panel only: no guard, no logon entr
 FreebuffOpti.exe --remove-watch  Stop the background guard and remove it from logon
 FreebuffOpti.exe --uninstall     Remove everything and restore index.html
 ```
+
+`--uninstall` is the same removal the panel's **Uninstall** tab performs, for when you would
+rather not do it from inside Freebuff.
 
 Plus `--path <dir>` to point at an install that is not auto-detected, `--open` to open the UI
 folder, and `--quiet`.
@@ -148,6 +179,12 @@ within a tick and the panel is put back.
 `HKCU\...\CurrentVersion\Run`. If a Freebuff update has rewritten `index.html` since the
 backup was taken, the backup is *kept* rather than put back over the newer file - the panel
 only ever removes its own block.
+
+The Uninstall tab in the panel runs exactly the same removal, so the two paths cannot drift
+apart. The one difference is the settings cookies: the panel clears them as part of the
+request, because it is the only side that can write them safely. `--uninstall` leaves them,
+and they are simply what makes your previous limits come back if you install Freebuff Opti
+again.
 
 ---
 
