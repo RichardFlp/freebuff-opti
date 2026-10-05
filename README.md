@@ -99,7 +99,11 @@ the previous settings.
 The **Uninstall** tab deletes the whole thing without a terminal: it lists what will go, asks
 once, and then removes it. One click is never enough - the confirm button is the second.
 
-The page cannot do the removal itself, and that is worth being precise about. It is a
+The gauge icon leaves the rail the moment you confirm: the page that drew it is the page
+asking to be removed, and it keeps running until Freebuff is next loaded, so an icon left
+behind would read as a removal that did not happen.
+
+The page cannot do the rest itself, and that is worth being precise about. It is a
 sandboxed renderer: it cannot delete a file, cannot end another process, and cannot undo the
 injection it arrived in. So it clears the settings it owns, writes a request cookie
 (`fbop_uninstall`) and the guard - an ordinary process outside Freebuff - carries it out on

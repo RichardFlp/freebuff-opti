@@ -49,7 +49,7 @@ import (
 var engineJS []byte
 
 const (
-	version      = "1.1.1"
+	version      = "1.1.2"
 	markerStart  = "<!-- freebuff-opti:start -->"
 	markerEnd    = "<!-- freebuff-opti:end -->"
 	engineName   = "freebuff-opti.js"
@@ -607,19 +607,19 @@ func uninstallRequestPending(install string) (string, bool) {
 // own .exe - and why the leftover has to be cleaned up from outside. Nothing
 // happens unless this process is the installed guard: an installer the user
 // downloaded is their file, not ours to delete.
-func scheduleSelfRemoval() {
+// scheduleDirRemoval arranges for the guard's folder to be taken away from
+// outside, a moment from now. A process cannot delete its own image, and
+// os.RemoveAll gives up at the first locked file, so anything still in there
+// has to be waited out by something else. ping is the sleep: unlike `timeout`,
+// it needs no console and no redirect.
+func scheduleDirRemoval() {
 	if runtime.GOOS != "windows" {
 		return
 	}
-	self, err := os.Executable()
-	if err != nil {
-		return
-	}
 	dir := watchDir()
-	if dir == "" || !strings.EqualFold(filepath.Clean(filepath.Dir(self)), filepath.Clean(dir)) {
+	if dir == "" {
 		return
 	}
-	// ping is the sleep: unlike `timeout`, it needs no console and no redirect.
 	script := fmt.Sprintf(`ping -n 4 127.0.0.1 >nul & rmdir /s /q "%s" >nul 2>&1`, dir)
 	cmd := exec.Command("cmd.exe", "/c", script)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: detachedFlag}
@@ -629,17 +629,35 @@ func scheduleSelfRemoval() {
 	_ = cmd.Process.Release()
 }
 
+// scheduleSelfRemoval is scheduleDirRemoval for the case where this process IS
+// the installed guard. An installer the user downloaded is their file, and is
+// left exactly where it is.
+func scheduleSelfRemoval() {
+	if selfImage == "" {
+		return
+	}
+	dir := watchDir()
+	if dir == "" || !strings.EqualFold(filepath.Clean(filepath.Dir(selfImage)), filepath.Clean(dir)) {
+		return
+	}
+	scheduleDirRemoval()
+}
+
 // removeEverything is the one place that takes the tool back off the machine:
 // release the limits, remove the panel and restore the UI file, then stop the
 // guard and take its files away. --uninstall runs it, and it is what the guard
 // runs when the panel's Uninstall tab asks.
 func removeEverything(ui string, quiet bool) error {
+	// Scheduled before anything else touches this image. removeWatch() renames a
+	// running guard rather than deleting it (Windows allows a rename where it
+	// refuses a delete), and once that has happened there is no way left to ask
+	// where we are: os.Executable() has nothing to report.
+	scheduleSelfRemoval()
 	clearLimits(quiet)
 	if err := uninstall(ui, quiet); err != nil {
 		return err
 	}
 	removeWatch()
-	scheduleSelfRemoval()
 	return nil
 }
 
@@ -1068,6 +1086,10 @@ func saveSettings(doc *optiSettings) error {
 
 const watchRunName = "FreebuffOpti"
 
+// selfImage is this process's own executable path, resolved once at startup -
+// see scheduleSelfRemoval for why it cannot be asked for later.
+var selfImage string
+
 func watchDir() string     { return optiDir() }
 func watchExePath() string { return filepath.Join(optiDir(), "FreebuffOpti.exe") }
 func watchPidPath() string { return filepath.Join(optiDir(), "guard.pid") }
@@ -1283,6 +1305,12 @@ func removeWatch() {
 		}
 	}
 	_ = os.RemoveAll(watchDir())
+	if _, err := os.Stat(watchDir()); err == nil {
+		// Something in there is still locked - a guard image that is only now
+		// exiting, usually, or this one. RemoveAll stops at the first such file,
+		// so the rest is left to a detached rmdir once we are gone.
+		scheduleDirRemoval()
+	}
 }
 
 // needsInjection says whether index.html should be written again, and why.
@@ -1542,6 +1570,9 @@ func freebuffRunning() bool {
 
 func main() {
 	initColors()
+	if self, err := os.Executable(); err == nil {
+		selfImage = self
+	}
 
 	var (
 		pathFlag        = flag.String("path", "", "Freebuff install directory (auto-detected by default)")

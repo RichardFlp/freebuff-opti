@@ -25,7 +25,7 @@
 ;(function () {
   'use strict'
 
-  var VERSION = '1.1.1'
+  var VERSION = '1.1.2'
 
   /* ------------------------------------------------- persistence contract ---
    * The settings are one JSON document, base64url-encoded, split across
@@ -486,6 +486,9 @@
     }
     if (!written) return false
     removalRequested = true
+    // The icon goes with the request, not with the files: the page that drew it
+    // is the page the request came from.
+    removeRailButton()
     return true
   }
 
@@ -1200,7 +1203,26 @@
 
   /* --------------------------------------------------------------- the shell --- */
 
+  /** Take this panel's own icon out of Freebuff's rail, and leave it out.
+   *
+   *  The removal is asked for from inside this page, and this page goes on
+   *  running until Freebuff is next loaded - so without this the rail still
+   *  shows the gauge icon after "removed", which reads as "not removed". Any
+   *  node left in the DOM is swept up too, not just the one held here: the shell
+   *  can re-render the rail underneath us. */
+  function removeRailButton() {
+    var nodes = document.querySelectorAll('[data-fbop-rail]')
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].parentNode) nodes[i].parentNode.removeChild(nodes[i])
+    }
+    railButton = null
+  }
+
   function installRailButton() {
+    if (removalRequested) {
+      removeRailButton()
+      return false
+    }
     if (railButton && railButton.isConnected) return true
     var rail = document.querySelector('.shell-navigation-top') || document.querySelector('.shell-navigation')
     if (!rail) return false
